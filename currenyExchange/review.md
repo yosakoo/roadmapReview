@@ -229,14 +229,18 @@ app:
             condition: service_healthy
 ```
 
-### 9. `godotenv` есть в зависимостях, но нигде не вызывается
+### 9. Можно добавить загрузку `.env` через `godotenv`
 
-`godotenv` это стандарт для загрузки `.env`-файлов в Go. Без вызова `godotenv.Load()` файл `.env` работает только в Docker через `environment:` в compose. При локальном запуске без Docker переменные надо выставлять вручную. Добавь в `main.go`:
+`godotenv` это стандарт для загрузки `.env`-файлов в Go, зависимость уже есть в `go.mod`. Сейчас без явного вызова `godotenv.Load()` файл `.env` читается только в Docker через `environment:` в compose — при локальном запуске без Docker переменные надо выставлять вручную.
+
+Вызов лучше класть в пакет `config`, туда, где переменные окружения и так уже читаются:
 
 ```go
-func main() {
+// internal/config/config.go
+func NewConfig() *Config {
     _ = godotenv.Load()  // игнорируем ошибку: файл может отсутствовать
-    ...
+    return &Config{...}
+}
 ```
 
 ### 10. Ошибки сервиса не логируются
@@ -261,7 +265,7 @@ if err != nil {
 
 Для чего-то серьёзнее подключи `slog` (стандартная библиотека) или `zap`, чтобы к каждой ошибке прикладывался контекст запроса.
 
-### 11. Нет `/health` и `/ready`
+### 11. Доп задача: добавить `/health` и `/ready`
 
 Без этих эндпоинтов оркестратор (Docker, Kubernetes) не знает, живо ли приложение и можно ли слать на него трафик. Разница между ними ([подробнее](https://habr.com/ru/companies/slurm/articles/692450/)):
 
@@ -332,14 +336,15 @@ handler := server.NewRouter(currencyHandler, exchangeRateHandler)
 log.Fatal(http.ListenAndServe(addr, handler))
 ```
 
-**Инициализация БД тоже в `main.go`.** Когда появятся реплики или второй пул соединений, логику подключения лучше вынести в `internal/repo`, чтобы `main.go` просто вызывал её:
+**Инициализация БД тоже в `main.go`.** Логика создания зависимостей как раз там и должна жить. Но когда появятся реплики или второй пул соединений, сам факторинг подключений стоит вынести в `pkg` - туда, где будет функция для создания конкретного `*sql.DB`. `main.go` вызывает её нужное количество раз и решает что куда передать:
 
 ```go
-db, err := repo.InitDB(configuration)
-if err != nil {
-    log.Fatal(err)
-}
-defer db.Close()
+// pkg/db/db.go
+func NewConnection(dsn string) (*sql.DB, error) { ... }
+
+// cmd/main.go
+mainDB, err := db.NewConnection(cfg.MainDSN)
+replicaDB, err := db.NewConnection(cfg.ReplicaDSN)
 ```
 
 ---
