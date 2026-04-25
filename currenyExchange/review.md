@@ -56,6 +56,69 @@ func (r *CurrencyRepository) Create(currency models.Currency) error {
 
 Контроллер возвращает клиенту ответ с `id: 0`.
 
+- **`GetByCode` и `GetByCodes` возвращают `200 null` вместо `404`.** Репозиторий при отсутствии записи возвращает `(nil, nil)`. Контроллер проверяет только `err != nil`, но не проверяет что сам результат не `nil`. В итоге клиент получает `200 OK` с телом `null`:
+
+```go
+// repo/currency.go
+if errors.Is(err, sql.ErrNoRows) {
+    return nil, nil  // err = nil, но валюты нет
+}
+
+// controllers/currency.go
+currency, err := c.service.GetByCode(code)
+if err != nil { ... }      // err = nil, в ветку не заходим
+writeJSON(w, currency)     // currency = nil -> 200 null
+```
+
+После получения результата нужно проверять и сам указатель:
+
+```go
+currency, err := c.service.GetByCode(code)
+if err != nil {
+    http.Error(w, err.Error(), http.StatusInternalServerError)
+    return
+}
+if currency == nil {
+    http.Error(w, "not found", http.StatusNotFound)
+    return
+}
+writeJSON(w, currency)
+```
+
+- **`GetAll` возвращает `null` вместо `[]` для пустой таблицы.** `var currencies []models.Currency` это nil-срез. `json.Encode` сериализует его в `null`. Большинство клиентов ожидают `[]`:
+
+```go
+var currencies []models.Currency  // nil -> "null" в JSON
+// нужно:
+currencies := make([]models.Currency, 0)  // пустой срез -> "[]" в JSON
+```
+
+- **`rows.Err()` не проверяется после цикла.** Если соединение оборвалось в середине итерации, `rows.Next()` вернёт `false` и цикл завершится без ошибки. Частичный результат вернётся как полный:
+
+```go
+for rows.Next() { ... }
+// нужно добавить:
+if err := rows.Err(); err != nil {
+    return nil, err
+}
+return currencies, nil
+```
+
+- **Не реализованы два обязательных эндпоинта.** По [спецификации](https://zhukovsd.github.io/golang-backend-learning-course/projects/currency-exchange/) проект должен поддерживать:
+
+  - `PATCH /exchangeRate/{PAIR}`: обновление курса. В `main.go` этого маршрута нет.
+  - `GET /exchange?from=BASE&to=TARGET&amount=VALUE`: конвертация валюты. Тоже отсутствует.
+
+- **POST-эндпоинты возвращают `200` вместо `201`.** `writeJSON` всегда пишет `w.WriteHeader(http.StatusOK)`. По спеке создание ресурса должно возвращать `201 Created`.
+
+- **Ошибки возвращаются как plain text, а не JSON.** Спецификация требует формат `{"message": "..."}`, но `http.Error` отдаёт `Content-Type: text/plain`:
+
+```go
+http.Error(w, err.Error(), http.StatusBadRequest)  // plain text
+// нужно:
+json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
+```
+
 - **Порт сервера захардкожен, `APP_PORT` не работает.** В `docker-compose.yml` прокидывается `${APP_PORT}:8080`, но в `main.go` сервер всегда слушает `:8080`. Если изменить `APP_PORT`, маппинг портов сломается:
 
 ```go
@@ -193,6 +256,24 @@ func (s *CurrencyService) Create(currency models.Currency) error {
     ...
 ```
 
+### 5а. Валидация не проверяет содержимое полей
+
+Три дыры в текущих проверках:
+
+**Пробелы проходят валидацию.** `len("   ") != 0` и `len("   ") == 3`, поэтому `name = "   "` и `code = "   "` считаются валидными. Нужен `strings.TrimSpace` перед проверкой.
+
+**Код валюты принимает любые символы.** Проверяется только длина, но не содержимое. `"1 2"`, `"???"` пройдут как валидные коды. По ISO 4217 код валюты: три заглавные латинские буквы:
+
+```go
+var validCode = regexp.MustCompile(`^[A-Z]{3}$`)
+
+if !validCode.MatchString(currency.Code) {
+    return errors.New("invalid currency code")
+}
+```
+
+**Rate не проверяется на положительное значение.** При создании курса `Rate float64` нигде не проверяется. Значение `0` или `-1.5` запишется в базу без ошибки.
+
 ### 6. `GetByCodes` проверяет длину в байтах, а не символах
 
 ```go
@@ -231,7 +312,7 @@ app:
 
 ### 9. Можно добавить загрузку `.env` через `godotenv`
 
-`godotenv` это стандарт для загрузки `.env`-файлов в Go, зависимость уже есть в `go.mod`. Сейчас без явного вызова `godotenv.Load()` файл `.env` читается только в Docker через `environment:` в compose — при локальном запуске без Docker переменные надо выставлять вручную.
+`godotenv` это стандарт для загрузки `.env`-файлов в Go, зависимость уже есть в `go.mod`. Сейчас без явного вызова `godotenv.Load()` файл `.env` читается только в Docker через `environment:` в compose. При локальном запуске без Docker переменные надо выставлять вручную.
 
 Вызов лучше класть в пакет `config`, туда, где переменные окружения и так уже читаются:
 
@@ -265,7 +346,18 @@ if err != nil {
 
 Для чего-то серьёзнее подключи `slog` (стандартная библиотека) или `zap`, чтобы к каждой ошибке прикладывался контекст запроса.
 
-### 11. Доп задача: добавить `/health` и `/ready`
+### 11. Нет линтера
+
+В проекте нет `golangci-lint`. Без линтера часть проблем из этого ревью поймалась бы автоматически, например `scanErr` вместо `err`, неиспользуемые переменные, `SELECT *`. Добавь `.golangci.yml` и подключи в CI или хотя бы в `Makefile`:
+
+```makefile
+lint:
+    golangci-lint run
+```
+
+Минимальный набор линтеров для старта: `errcheck`, `govet`, `staticcheck`, `gosimple`.
+
+### 12. Доп задача: добавить `/health` и `/ready`
 
 Без этих эндпоинтов оркестратор (Docker, Kubernetes) не знает, живо ли приложение и можно ли слать на него трафик. Разница между ними ([подробнее](https://habr.com/ru/companies/slurm/articles/692450/)):
 
@@ -301,7 +393,7 @@ type ExchangeRateService struct {
 }
 ```
 
-Для текущего размера проекта это ок, но когда дойдёшь до тестов — придётся переделывать. Сервисы нельзя тестировать без реальной базы. Объяви интерфейсы в пакете `services`:
+Для текущего размера проекта это ок, но когда дойдёшь до тестов, придётся переделывать. Сервисы нельзя тестировать без реальной базы. Объяви интерфейсы в пакете `services`:
 
 ```go
 type CurrencyRepo interface {
