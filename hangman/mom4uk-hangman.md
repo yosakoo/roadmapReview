@@ -1,6 +1,8 @@
 # Ревью Hangman
 Проект: https://github.com/mom4uk/hangman
 
+[Ревью сделано в рамках учебной подписки](https://zhukovsd.it/services/student-subscription/)
+
 Реализация написана в процедурном стиле, код разбит по пакетам. Есть баги. Игра запускается.
 
 <img src="https://i.pinimg.com/736x/5a/ea/09/5aea0924f2e97cfe7e63b626441e9d07.jpg" width="300"/>
