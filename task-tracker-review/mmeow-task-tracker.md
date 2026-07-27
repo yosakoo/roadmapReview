@@ -3,7 +3,7 @@
 
 Многосервисный тасктрекер на Go: backend REST API, статический фронтенд на Nginx, планировщик на gRPC с cron, email-sender с воркер-пулом. PostgreSQL, миграции, Kafka как шина событий, bcrypt, JWT. Разбит по слоям (controllers, services, repositories, domain, dto). Есть e2e на Playwright, интеграционные тесты, GitLab CI с публикацией образов. Проект собирается, тесты запускаются через `make compose-tests`.
 
-<img src="" width="400"/>
+<img src="https://i.pinimg.com/736x/38/fa/92/38fa9223ec4f2b853d7b6f6ed0ef9923.jpg" width="400"/>
 
 ---
 
